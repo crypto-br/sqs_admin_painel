@@ -6,15 +6,12 @@ Parameters:
   SqsEndpointUrl:
     Type: String
     Default: ''
-    Description: Custom SQS endpoint (leave empty for AWS, set for LocalStack)
   AdminEmail:
     Type: String
     Default: ''
-    Description: Email for the initial admin user (Cognito). Leave empty to skip user creation.
 
 Conditions:
   CreateAdminUser: !Not [!Equals [!Ref AdminEmail, '']]
-  IsLocal: !Not [!Equals [!Ref SqsEndpointUrl, '']]
 
 Globals:
   Function:
@@ -23,7 +20,6 @@ Globals:
     MemorySize: 256
 
 Resources:
-  # ---- Auth (Cognito) ----
   UserPool:
     Type: AWS::Cognito::UserPool
     Properties:
@@ -62,7 +58,6 @@ Resources:
         - Name: email_verified
           Value: 'true'
 
-  # ---- API ----
   SqsAdminApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -94,73 +89,155 @@ Resources:
       Events:
         ListQueues:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues, Method: GET }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: /queues
+            Method: GET
         CreateQueue:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues, Method: POST }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: /queues
+            Method: POST
         DeleteQueue:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}, Method: DELETE }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}"
+            Method: DELETE
         UpdateQueue:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}, Method: PUT }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}"
+            Method: PUT
         PurgeQueue:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/purge, Method: POST }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/purge"
+            Method: POST
         SendMessage:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/messages, Method: POST }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/messages"
+            Method: POST
         ReceiveMessages:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/messages, Method: GET }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/messages"
+            Method: GET
         DeleteMessage:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/messages, Method: DELETE }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/messages"
+            Method: DELETE
         RedriveMessages:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/redrive, Method: POST }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/redrive"
+            Method: POST
         BatchSendMessages:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/messages/batch, Method: POST }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/messages/batch"
+            Method: POST
         ExportMessages:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/export, Method: POST }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/export"
+            Method: POST
         ImportMessages:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/import, Method: POST }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/import"
+            Method: POST
         MoveMessages:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/move, Method: POST }
-        # CORS preflight (no auth)
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/move"
+            Method: POST
         OptionsQueues:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues, Method: OPTIONS, Auth: { Authorizer: NONE } }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: /queues
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
         OptionsQueue:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}, Method: OPTIONS, Auth: { Authorizer: NONE } }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}"
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
         OptionsQueuePurge:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/purge, Method: OPTIONS, Auth: { Authorizer: NONE } }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/purge"
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
         OptionsQueueRedrive:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/redrive, Method: OPTIONS, Auth: { Authorizer: NONE } }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/redrive"
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
         OptionsQueueMessages:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/messages, Method: OPTIONS, Auth: { Authorizer: NONE } }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/messages"
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
         OptionsBatch:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/messages/batch, Method: OPTIONS, Auth: { Authorizer: NONE } }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/messages/batch"
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
         OptionsExport:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/export, Method: OPTIONS, Auth: { Authorizer: NONE } }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/export"
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
         OptionsImport:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/import, Method: OPTIONS, Auth: { Authorizer: NONE } }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/import"
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
         OptionsMove:
           Type: Api
-          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/move, Method: OPTIONS, Auth: { Authorizer: NONE } }
+          Properties:
+            RestApiId: !Ref SqsAdminApi
+            Path: "/queues/{queueName}/move"
+            Method: OPTIONS
+            Auth:
+              Authorizer: NONE
 
-  # ---- Frontend Hosting ----
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -236,6 +313,3 @@ Outputs:
   UserPoolClientId:
     Description: Cognito User Pool Client ID
     Value: !Ref UserPoolClient
-  CognitoDomain:
-    Description: Cognito auth domain
-    Value: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}

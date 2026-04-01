@@ -2,7 +2,7 @@
 set -euo pipefail
 
 STACK_NAME="${1:-sqs-admin-panel}"
-REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+REGION="${AWS_DEFAULT_REGION:-us-east-2}"
 ADMIN_EMAIL="${2:-}"
 
 echo "🚀 Deploying SQS Admin Panel..."
@@ -13,7 +13,7 @@ echo ""
 
 # 1. Build & deploy SAM
 echo "📦 Building backend..."
-sam build --region "$REGION"
+sam build --use-container --region "$REGION"
 
 echo "☁️  Deploying stack..."
 PARAMS="SqsEndpointUrl=''"
