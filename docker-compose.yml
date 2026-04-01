@@ -1,0 +1,55 @@
+services:
+  localstack:
+    image: localstack/localstack:4.4
+    ports:
+      - '4566:4566'
+    environment:
+      - SERVICES=sqs
+      - DEFAULT_REGION=us-east-1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    ports:
+      - '3001:3001'
+    environment:
+      - SQS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+    depends_on:
+      localstack:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - '5173:5173'
+    environment:
+      - VITE_PROXY_TARGET=http://backend:3001
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5173/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  tests:
+    image: python:3.12-alpine
+    volumes:
+      - ./tests.sh:/tests.sh:ro
+    entrypoint: ["sh", "-c", "apk add --no-cache curl bash > /dev/null 2>&1 && bash /tests.sh"]
+    environment:
+      - API_BASE=http://backend:3001
+      - BACKEND_BASE=http://backend:3001
+      - SKIP_FRONTEND_TESTS=1
+    depends_on:
+      frontend:
+        condition: service_healthy
+    profiles:
+      - test

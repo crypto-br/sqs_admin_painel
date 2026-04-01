@@ -1,0 +1,241 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SQS Admin Panel - 100% Serverless
+
+Parameters:
+  SqsEndpointUrl:
+    Type: String
+    Default: ''
+    Description: Custom SQS endpoint (leave empty for AWS, set for LocalStack)
+  AdminEmail:
+    Type: String
+    Default: ''
+    Description: Email for the initial admin user (Cognito). Leave empty to skip user creation.
+
+Conditions:
+  CreateAdminUser: !Not [!Equals [!Ref AdminEmail, '']]
+  IsLocal: !Not [!Equals [!Ref SqsEndpointUrl, '']]
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.12
+    MemorySize: 256
+
+Resources:
+  # ---- Auth (Cognito) ----
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-users
+      AutoVerifiedAttributes: [email]
+      UsernameAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: sqs-admin-web
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+
+  AdminUser:
+    Type: AWS::Cognito::UserPoolUser
+    Condition: CreateAdminUser
+    Properties:
+      UserPoolId: !Ref UserPool
+      Username: !Ref AdminEmail
+      DesiredDeliveryMediums: [EMAIL]
+      UserAttributes:
+        - Name: email
+          Value: !Ref AdminEmail
+        - Name: email_verified
+          Value: 'true'
+
+  # ---- API ----
+  SqsAdminApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: api
+      Cors:
+        AllowOrigin: "'*'"
+        AllowMethods: "'*'"
+        AllowHeaders: "'*'"
+      Auth:
+        DefaultAuthorizer: CognitoAuth
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          CognitoAuth:
+            UserPoolArn: !GetAtt UserPool.Arn
+
+  SqsAdminFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          SQS_ENDPOINT_URL: !Ref SqsEndpointUrl
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: 'sqs:*'
+              Resource: '*'
+      Events:
+        ListQueues:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues, Method: GET }
+        CreateQueue:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues, Method: POST }
+        DeleteQueue:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}, Method: DELETE }
+        UpdateQueue:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}, Method: PUT }
+        PurgeQueue:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/purge, Method: POST }
+        SendMessage:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/messages, Method: POST }
+        ReceiveMessages:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/messages, Method: GET }
+        DeleteMessage:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/messages, Method: DELETE }
+        RedriveMessages:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/redrive, Method: POST }
+        BatchSendMessages:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/messages/batch, Method: POST }
+        ExportMessages:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/export, Method: POST }
+        ImportMessages:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/import, Method: POST }
+        MoveMessages:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/move, Method: POST }
+        # CORS preflight (no auth)
+        OptionsQueues:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues, Method: OPTIONS, Auth: { Authorizer: NONE } }
+        OptionsQueue:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}, Method: OPTIONS, Auth: { Authorizer: NONE } }
+        OptionsQueuePurge:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/purge, Method: OPTIONS, Auth: { Authorizer: NONE } }
+        OptionsQueueRedrive:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/redrive, Method: OPTIONS, Auth: { Authorizer: NONE } }
+        OptionsQueueMessages:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/messages, Method: OPTIONS, Auth: { Authorizer: NONE } }
+        OptionsBatch:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/messages/batch, Method: OPTIONS, Auth: { Authorizer: NONE } }
+        OptionsExport:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/export, Method: OPTIONS, Auth: { Authorizer: NONE } }
+        OptionsImport:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/import, Method: OPTIONS, Auth: { Authorizer: NONE } }
+        OptionsMove:
+          Type: Api
+          Properties: { RestApiId: !Ref SqsAdminApi, Path: /queues/{queueName}/move, Method: OPTIONS, Auth: { Authorizer: NONE } }
+
+  # ---- Frontend Hosting ----
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-frontend-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${FrontendBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref CloudFrontOAC
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          Compress: true
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub https://${SqsAdminApi}.execute-api.${AWS::Region}.amazonaws.com/api
+  FrontendUrl:
+    Description: CloudFront URL
+    Value: !Sub https://${CloudFrontDistribution.DomainName}
+  FrontendBucket:
+    Description: S3 bucket for frontend assets
+    Value: !Ref FrontendBucket
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref UserPoolClient
+  CognitoDomain:
+    Description: Cognito auth domain
+    Value: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
