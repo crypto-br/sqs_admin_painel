@@ -45,14 +45,8 @@ def lambda_handler(event, context):
         if method == 'GET' and path == '/queues':
             urls = sqs.list_queues().get('QueueUrls', [])
             queues = []
-            attrs_to_get = [
-                'ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible',
-                'ApproximateNumberOfMessagesDelayed', 'QueueArn', 'VisibilityTimeout',
-                'MessageRetentionPeriod', 'RedrivePolicy', 'FifoQueue',
-                'ContentBasedDeduplication', 'CreatedTimestamp', 'LastModifiedTimestamp',
-            ]
             for url in urls:
-                attr = sqs.get_queue_attributes(QueueUrl=url, AttributeNames=attrs_to_get).get('Attributes', {})
+                attr = sqs.get_queue_attributes(QueueUrl=url, AttributeNames=['All']).get('Attributes', {})
                 name = url.split('/')[-1]
                 queues.append({'name': name, 'url': url, 'attributes': attr})
             # Enrich: detect which queues are DLQs and map source->dlq relationships

@@ -1,3 +1,5 @@
+version = 0.1
+
 [default.local_start_api.parameters]
 parameter_overrides = "SqsEndpointUrl=http://host.docker.internal:4566"
 port = 3001
@@ -6,4 +8,4 @@ docker_network = "sqs-admin-net"
 [default.deploy.parameters]
 resolve_s3 = true
 capabilities = "CAPABILITY_IAM"
-region = "us-east-1"
+region = "us-east-2"
