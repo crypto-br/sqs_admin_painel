@@ -3,4 +3,4 @@ node_modules/
 dist/
 __pycache__/
 .vite/
-sqs0
+sqs0*
