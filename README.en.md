@@ -103,6 +103,14 @@ VITE_COGNITO_CLIENT_ID=xxx \
 aws s3 sync dist/ s3://BUCKET_NAME/ --delete
 ```
 
+## Remove from AWS
+
+```bash
+./destroy.sh sqs-admin-panel
+```
+
+Empties the S3 bucket and deletes the entire CloudFormation stack (Lambda, API Gateway, Cognito, S3, CloudFront).
+
 ## Project Structure
 
 ```

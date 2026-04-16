@@ -1,6 +1,11 @@
 .dashboard { padding: 0; }
 .dash-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .dash-header h2 { margin: 0; }
+.dash-actions { display: flex; gap: 8px; align-items: center; }
+.dash-search { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; width: 220px; }
+.dash-table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.page-info { font-size: 12px; color: #888; }
+.pagination { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 24px; }
 
 .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 24px; }
 .kpi { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; text-align: center; }
