@@ -41,15 +41,39 @@ def lambda_handler(event, context):
         if method == 'OPTIONS':
             return cors_response(200)
 
-        # GET /queues
+        # GET /queues — paginated with search
         if method == 'GET' and path == '/queues':
-            urls = sqs.list_queues().get('QueueUrls', [])
+            page = int(params.get('page', '1'))
+            page_size = int(params.get('pageSize', '20'))
+            search = (params.get('search') or '').lower()
+
+            # list_queues is fast — just URLs, no attributes
+            all_urls = sqs.list_queues().get('QueueUrls', [])
+            all_names = [{'name': url.split('/')[-1], 'url': url} for url in all_urls]
+
+            # Filter by search
+            if search:
+                all_names = [q for q in all_names if search in q['name'].lower()]
+
+            total = len(all_names)
+
+            # Paginate
+            start = (page - 1) * page_size
+            page_items = all_names[start:start + page_size]
+
+            # Fetch attributes only for the current page
+            attrs_to_get = [
+                'ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible',
+                'ApproximateNumberOfMessagesDelayed', 'QueueArn', 'VisibilityTimeout',
+                'MessageRetentionPeriod', 'RedrivePolicy', 'FifoQueue',
+                'ContentBasedDeduplication', 'CreatedTimestamp', 'LastModifiedTimestamp',
+            ]
             queues = []
-            for url in urls:
-                attr = sqs.get_queue_attributes(QueueUrl=url, AttributeNames=['All']).get('Attributes', {})
-                name = url.split('/')[-1]
-                queues.append({'name': name, 'url': url, 'attributes': attr})
-            # Enrich: detect which queues are DLQs and map source->dlq relationships
+            for q in page_items:
+                attr = sqs.get_queue_attributes(QueueUrl=q['url'], AttributeNames=attrs_to_get).get('Attributes', {})
+                queues.append({'name': q['name'], 'url': q['url'], 'attributes': attr})
+
+            # Enrich DLQ relationships within the page
             arn_to_name = {q['attributes'].get('QueueArn', ''): q['name'] for q in queues}
             for q in queues:
                 rp = q['attributes'].get('RedrivePolicy')
@@ -59,12 +83,17 @@ def lambda_handler(event, context):
                         q['dlqName'] = arn_to_name.get(dlq_arn)
                     except Exception:
                         pass
-                # Check if this queue IS a DLQ for others
                 q['isDeadLetterQueue'] = any(
                     _is_dlq_of(other, q['attributes'].get('QueueArn', ''))
                     for other in queues if other['name'] != q['name']
                 )
-            return cors_response(200, queues)
+
+            return cors_response(200, {
+                'queues': queues,
+                'total': total,
+                'page': page,
+                'pageSize': page_size,
+            })
 
         # POST /queues
         if method == 'POST' and path == '/queues':

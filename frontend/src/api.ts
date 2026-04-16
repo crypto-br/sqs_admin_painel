@@ -19,7 +19,8 @@ async function request(path: string, opts?: RequestInit) {
 }
 
 export const api = {
-  listQueues: () => request('/queues'),
+  listQueues: (page = 1, pageSize = 20, search = '') =>
+    request(`/queues?page=${page}&pageSize=${pageSize}${search ? `&search=${encodeURIComponent(search)}` : ''}`),
   createQueue: (name: string, attributes?: Record<string, string>) =>
     request('/queues', { method: 'POST', body: JSON.stringify({ name, attributes }) }),
   deleteQueue: (name: string) => request(`/queues/${name}`, { method: 'DELETE' }),

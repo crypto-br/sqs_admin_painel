@@ -10,18 +10,33 @@ interface Queue {
   isDeadLetterQueue?: boolean
 }
 
+const PAGE_SIZE = 20
+
 export default function Dashboard({ onSelectQueue }: { onSelectQueue: (name: string) => void }) {
   const [queues, setQueues] = useState<Queue[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [search, setSearch] = useState('')
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  const load = useCallback(async () => {
-    try { setQueues(await api.listQueues()); setError('') }
-    catch (e: any) { setError(e.message) }
-  }, [])
+  const load = useCallback(async (p = page, s = search) => {
+    setLoading(true)
+    try {
+      const data = await api.listQueues(p, PAGE_SIZE, s)
+      setQueues(data.queues); setTotal(data.total); setError('')
+    } catch (e: any) { setError(e.message) }
+    finally { setLoading(false) }
+  }, [page, search])
 
-  useEffect(() => { load(); const id = setInterval(load, 10000); return () => clearInterval(id) }, [load])
+  useEffect(() => { load() }, [load])
+  useEffect(() => { const id = setInterval(() => load(), 15000); return () => clearInterval(id) }, [load])
 
-  const total = queues.length
+  const totalPages = Math.ceil(total / PAGE_SIZE)
+
+  const handleSearch = (v: string) => { setSearch(v); setPage(1); load(1, v) }
+  const goPage = (p: number) => { setPage(p); load(p) }
+
   const totalMsgs = queues.reduce((s, q) => s + Number(q.attributes.ApproximateNumberOfMessages || 0), 0)
   const totalInFlight = queues.reduce((s, q) => s + Number(q.attributes.ApproximateNumberOfMessagesNotVisible || 0), 0)
   const totalDelayed = queues.reduce((s, q) => s + Number(q.attributes.ApproximateNumberOfMessagesDelayed || 0), 0)
@@ -33,20 +48,27 @@ export default function Dashboard({ onSelectQueue }: { onSelectQueue: (name: str
     <div className="dashboard">
       <div className="dash-header">
         <h2>📊 Dashboard</h2>
-        <button className="btn" onClick={load}>↻ Refresh</button>
+        <div className="dash-actions">
+          <input className="dash-search" value={search} onChange={e => handleSearch(e.target.value)}
+            placeholder="🔍 Search queues..." />
+          <button className="btn" onClick={() => load()} disabled={loading}>{loading ? '...' : '↻ Refresh'}</button>
+        </div>
       </div>
       {error && <div className="error">{error}</div>}
 
       <div className="kpi-grid">
         <div className="kpi"><span className="kpi-value">{total}</span><span className="kpi-label">Total Queues</span></div>
-        <div className="kpi"><span className="kpi-value">{fifoCount}</span><span className="kpi-label">FIFO</span></div>
-        <div className="kpi highlight-blue"><span className="kpi-value">{totalMsgs}</span><span className="kpi-label">Available</span></div>
-        <div className="kpi highlight-orange"><span className="kpi-value">{totalInFlight}</span><span className="kpi-label">In Flight</span></div>
-        <div className="kpi highlight-yellow"><span className="kpi-value">{totalDelayed}</span><span className="kpi-label">Delayed</span></div>
-        <div className="kpi highlight-red"><span className="kpi-value">{totalDlqMsgs}</span><span className="kpi-label">In DLQ</span></div>
+        <div className="kpi"><span className="kpi-value">{fifoCount}</span><span className="kpi-label">FIFO (page)</span></div>
+        <div className="kpi highlight-blue"><span className="kpi-value">{totalMsgs}</span><span className="kpi-label">Available (page)</span></div>
+        <div className="kpi highlight-orange"><span className="kpi-value">{totalInFlight}</span><span className="kpi-label">In Flight (page)</span></div>
+        <div className="kpi highlight-yellow"><span className="kpi-value">{totalDelayed}</span><span className="kpi-label">Delayed (page)</span></div>
+        <div className="kpi highlight-red"><span className="kpi-value">{totalDlqMsgs}</span><span className="kpi-label">In DLQ (page)</span></div>
       </div>
 
-      <h3>All Queues</h3>
+      <div className="dash-table-header">
+        <h3>Queues {search && `matching "${search}"`}</h3>
+        <span className="page-info">Showing {queues.length} of {total}</span>
+      </div>
       <table className="dash-table">
         <thead>
           <tr>
@@ -70,9 +92,7 @@ export default function Dashboard({ onSelectQueue }: { onSelectQueue: (name: str
             return (
               <tr key={q.name} className={q.isDeadLetterQueue ? 'dlq-row' : ''}>
                 <td>
-                  <button className="link-btn" onClick={() => onSelectQueue(q.name)}>
-                    {q.name}
-                  </button>
+                  <button className="link-btn" onClick={() => onSelectQueue(q.name)}>{q.name}</button>
                   {q.isDeadLetterQueue && <span className="badge badge-red">DLQ</span>}
                 </td>
                 <td>{isFifo ? <span className="badge badge-blue">FIFO</span> : 'Standard'}</td>
@@ -88,13 +108,19 @@ export default function Dashboard({ onSelectQueue }: { onSelectQueue: (name: str
         </tbody>
       </table>
 
+      {totalPages > 1 && (
+        <div className="pagination">
+          <button className="btn small" onClick={() => goPage(page - 1)} disabled={page <= 1}>← Prev</button>
+          <span className="page-info">Page {page} of {totalPages}</span>
+          <button className="btn small" onClick={() => goPage(page + 1)} disabled={page >= totalPages}>Next →</button>
+        </div>
+      )}
+
       {dlqs.length > 0 && (
         <>
           <h3>⚠️ Dead Letter Queues</h3>
           <table className="dash-table">
-            <thead>
-              <tr><th>DLQ</th><th>Messages</th><th>Source Queues</th></tr>
-            </thead>
+            <thead><tr><th>DLQ</th><th>Messages</th><th>Source Queues</th></tr></thead>
             <tbody>
               {dlqs.map(dlq => {
                 const sources = queues.filter(q => q.dlqName === dlq.name).map(q => q.name)

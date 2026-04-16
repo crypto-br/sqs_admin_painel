@@ -42,7 +42,7 @@ t "Create standard queue"      "curl -sf -X POST $API/queues -H 'Content-Type: a
 t "Create FIFO queue"          "curl -sf -X POST $API/queues -H 'Content-Type: application/json' -d '{\"name\":\"t-fifo.fifo\"}' | grep -q queueUrl"
 t "List includes created"      "curl -sf $API/queues | grep -q t-std"
 t "Update attributes"          "curl -sf -X PUT $API/queues/t-std -H 'Content-Type: application/json' -d '{\"attributes\":{\"VisibilityTimeout\":\"60\"}}' | grep -q updated"
-t "Verify updated attrs"       "curl -sf $API/queues | python3 -c \"import sys,json;q=[x for x in json.load(sys.stdin) if x['name']=='t-std'][0];assert q['attributes']['VisibilityTimeout']=='60'\""
+t "Verify updated attrs"       "curl -sf $API/queues | python3 -c \"import sys,json;q=[x for x in json.load(sys.stdin)['queues'] if x['name']=='t-std'][0];assert q['attributes']['VisibilityTimeout']=='60'\""
 
 echo ""
 echo "--- Send & Receive ---"
@@ -71,18 +71,23 @@ echo ""
 echo "--- Move Messages ---"
 curl -sf -X POST "$API/queues" -H 'Content-Type: application/json' -d '{"name":"t-target"}' > /dev/null 2>&1 || true
 t "Move to target"             "curl -sf -X POST $API/queues/t-std/move -H 'Content-Type: application/json' -d '{\"targetQueue\":\"t-target\",\"maxMessages\":2}' | grep -q moved"
-t "Target has messages"        "curl -sf $API/queues | python3 -c \"import sys,json;q=[x for x in json.load(sys.stdin) if x['name']=='t-target'][0];assert int(q['attributes']['ApproximateNumberOfMessages'])>0\""
+t "Target has messages"        "curl -sf $API/queues | python3 -c \"import sys,json;q=[x for x in json.load(sys.stdin)['queues'] if x['name']=='t-target'][0];assert int(q['attributes']['ApproximateNumberOfMessages'])>0\""
 
 echo ""
 echo "--- DLQ & Redrive ---"
 curl -sf -X POST "$API/queues" -H 'Content-Type: application/json' -d '{"name":"t-dlq"}' > /dev/null 2>&1 || true
-DLQ_ARN=$(curl -sf "$API/queues" 2>/dev/null | python3 -c "import sys,json;print([q['attributes']['QueueArn'] for q in json.load(sys.stdin) if q['name']=='t-dlq'][0])" 2>/dev/null || echo "")
+DLQ_ARN=$(curl -sf "$API/queues" 2>/dev/null | python3 -c "import sys,json;print([q['attributes']['QueueArn'] for q in json.load(sys.stdin)['queues'] if q['name']=='t-dlq'][0])" 2>/dev/null || echo "")
 SRC_BODY=$(python3 -c "import json;print(json.dumps({'name':'t-src','attributes':{'RedrivePolicy':json.dumps({'deadLetterTargetArn':'$DLQ_ARN','maxReceiveCount':'3'})}}))")
 curl -sf -X POST "$API/queues" -H 'Content-Type: application/json' -d "$SRC_BODY" > /dev/null 2>&1 || true
-t "DLQ detected"               "curl -sf $API/queues | python3 -c \"import sys,json;q=[x for x in json.load(sys.stdin) if x['name']=='t-dlq'][0];assert q['isDeadLetterQueue']==True\""
-t "Source shows dlqName"       "curl -sf $API/queues | python3 -c \"import sys,json;q=[x for x in json.load(sys.stdin) if x['name']=='t-src'][0];assert q.get('dlqName')=='t-dlq'\""
+t "DLQ detected"               "curl -sf $API/queues | python3 -c \"import sys,json;q=[x for x in json.load(sys.stdin)['queues'] if x['name']=='t-dlq'][0];assert q['isDeadLetterQueue']==True\""
+t "Source shows dlqName"       "curl -sf $API/queues | python3 -c \"import sys,json;q=[x for x in json.load(sys.stdin)['queues'] if x['name']=='t-src'][0];assert q.get('dlqName')=='t-dlq'\""
 curl -sf -X POST "$API/queues/t-dlq/messages" -H 'Content-Type: application/json' -d '{"messageBody":"dead"}' > /dev/null 2>&1 || true
 t "Redrive DLQ→source"         "curl -sf -X POST $API/queues/t-dlq/redrive -H 'Content-Type: application/json' -d '{\"maxMessages\":10}' | grep -q t-src"
+
+echo ""
+echo "--- Pagination & Search ---"
+t "Response has pagination"    "curl -sf '$API/queues?page=1&pageSize=2' | python3 -c \"import sys,json;d=json.load(sys.stdin);assert 'total' in d and 'queues' in d and len(d['queues'])<=2\""
+t "Search filters by name"    "curl -sf '$API/queues?search=t-std' | python3 -c \"import sys,json;d=json.load(sys.stdin);assert all('t-std' in q['name'] for q in d['queues'])\""
 
 echo ""
 echo "--- Purge & Delete ---"

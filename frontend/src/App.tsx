@@ -39,8 +39,10 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   const showSuccess = (msg: string) => { setSuccess(msg); setTimeout(() => setSuccess(''), 4000) }
 
   const loadQueues = useCallback(async () => {
-    try { setQueues(await api.listQueues()); setError('') }
-    catch (e: any) { setError(e.message) }
+    try {
+      const data = await api.listQueues(1, 1000)
+      setQueues(data.queues); setError('')
+    } catch (e: any) { setError(e.message) }
   }, [])
 
   useEffect(() => { loadQueues() }, [loadQueues])
