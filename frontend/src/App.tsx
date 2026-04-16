@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from './api'
 import Dashboard from './Dashboard'
+import ConfirmModal from './ConfirmModal'
 
 interface Queue {
   name: string
@@ -15,6 +16,14 @@ interface Message {
   Body: string
   ReceiptHandle: string
   Attributes?: Record<string, string>
+}
+
+interface ConfirmState {
+  title: string
+  message: string
+  confirmText: string
+  typeToConfirm?: string
+  onConfirm: () => void
 }
 
 type View = 'dashboard' | 'queue'
@@ -35,6 +44,7 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   const [batchJson, setBatchJson] = useState('')
   const [moveTarget, setMoveTarget] = useState('')
   const [filterText, setFilterText] = useState('')
+  const [confirmModal, setConfirmModal] = useState<ConfirmState | null>(null)
 
   const showSuccess = (msg: string) => { setSuccess(msg); setTimeout(() => setSuccess(''), 4000) }
 
@@ -68,18 +78,35 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   }
 
   const handleDelete = async (name: string) => {
-    if (!confirm(`Delete queue "${name}"?`)) return
-    try {
-      await api.deleteQueue(name)
-      if (selected?.name === name) { setSelected(null); setMessages([]) }
-      await loadQueues()
-    } catch (e: any) { setError(e.message) }
+    setConfirmModal({
+      title: '🗑️ Delete Queue',
+      message: `This will permanently delete the queue and all its messages. This action cannot be undone.`,
+      confirmText: 'Delete Queue',
+      typeToConfirm: name,
+      onConfirm: async () => {
+        setConfirmModal(null)
+        try {
+          await api.deleteQueue(name)
+          if (selected?.name === name) { setSelected(null); setMessages([]) }
+          await loadQueues()
+        } catch (e: any) { setError(e.message) }
+      },
+    })
   }
 
   const handlePurge = async () => {
-    if (!selected || !confirm(`Purge "${selected.name}"?`)) return
-    try { await api.purgeQueue(selected.name); setMessages([]); await loadQueues() }
-    catch (e: any) { setError(e.message) }
+    if (!selected) return
+    setConfirmModal({
+      title: '🗑️ Purge Queue',
+      message: `This will delete ALL messages from "${selected.name}". This action cannot be undone.`,
+      confirmText: 'Purge Queue',
+      typeToConfirm: selected.name,
+      onConfirm: async () => {
+        setConfirmModal(null)
+        try { await api.purgeQueue(selected.name); setMessages([]); await loadQueues() }
+        catch (e: any) { setError(e.message) }
+      },
+    })
   }
 
   const handleSaveAttrs = async () => {
@@ -120,12 +147,20 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   }
 
   const handleRedrive = async () => {
-    if (!selected || !confirm(`Redrive all messages from "${selected.name}" back to source queue?`)) return
-    try {
-      const r = await api.redriveMessages(selected.name, 100)
-      setMessages([]); await loadQueues()
-      showSuccess(`${r.moved} message(s) moved to "${r.sourceQueue}"`)
-    } catch (e: any) { setError(e.message) }
+    if (!selected) return
+    setConfirmModal({
+      title: '🔄 Redrive Messages',
+      message: `This will move all messages from "${selected.name}" back to the source queue.`,
+      confirmText: 'Redrive',
+      onConfirm: async () => {
+        setConfirmModal(null)
+        try {
+          const r = await api.redriveMessages(selected.name, 100)
+          setMessages([]); await loadQueues()
+          showSuccess(`${r.moved} message(s) moved to "${r.sourceQueue}"`)
+        } catch (e: any) { setError(e.message) }
+      },
+    })
   }
 
   // --- Feature 3: Batch Send ---
@@ -175,12 +210,19 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
   // --- Feature 1: Move Messages ---
   const handleMove = async () => {
     if (!selected || !moveTarget) return
-    if (!confirm(`Move all messages from "${selected.name}" to "${moveTarget}"?`)) return
-    try {
-      const r = await api.moveMessages(selected.name, moveTarget, 100)
-      setMessages([]); await loadQueues()
-      showSuccess(`${r.moved} message(s) moved to "${r.targetQueue}"`)
-    } catch (e: any) { setError(e.message) }
+    setConfirmModal({
+      title: '🔀 Move Messages',
+      message: `This will move all messages from "${selected.name}" to "${moveTarget}". Messages will be removed from the source queue.`,
+      confirmText: 'Move All',
+      onConfirm: async () => {
+        setConfirmModal(null)
+        try {
+          const r = await api.moveMessages(selected.name, moveTarget, 100)
+          setMessages([]); await loadQueues()
+          showSuccess(`${r.moved} message(s) moved to "${r.targetQueue}"`)
+        } catch (e: any) { setError(e.message) }
+      },
+    })
   }
 
   const isFifo = selected?.attributes.FifoQueue === 'true'
@@ -325,6 +367,17 @@ export default function App({ onLogout }: { onLogout?: () => void }) {
           </>
         )}
       </main>
+
+      {confirmModal && (
+        <ConfirmModal
+          title={confirmModal.title}
+          message={confirmModal.message}
+          confirmText={confirmModal.confirmText}
+          typeToConfirm={confirmModal.typeToConfirm}
+          onConfirm={confirmModal.onConfirm}
+          onCancel={() => setConfirmModal(null)}
+        />
+      )}
     </div>
   )
 }
