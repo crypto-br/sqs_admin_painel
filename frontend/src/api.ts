@@ -48,7 +48,8 @@ export const api = {
   getQueueByName: async (name: string) => {
     const pageSize = 50
     let page = 1
-    while (true) {
+    const maxPages = 20
+    while (page <= maxPages) {
       const data = await request(`/queues?page=${page}&pageSize=${pageSize}&search=${encodeURIComponent(name)}`)
       const queues = data?.queues || []
       const match = queues.find((q: any) => q.name === name)
@@ -56,5 +57,6 @@ export const api = {
       if (queues.length < pageSize) return null
       page++
     }
+    return null
   },
 }
