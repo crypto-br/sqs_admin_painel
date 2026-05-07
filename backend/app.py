@@ -1,13 +1,19 @@
 import json
+import logging
 import os
 import re
+import uuid
+
 import boto3
+
+logger = logging.getLogger(__name__)
 
 def get_sqs_client():
     endpoint = os.environ.get('SQS_ENDPOINT_URL')
+    region = os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
     if endpoint:
-        return boto3.client('sqs', endpoint_url=endpoint, region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
-    return boto3.client('sqs')
+        return boto3.client('sqs', endpoint_url=endpoint, region_name=region)
+    return boto3.client('sqs', region_name=region)
 
 def _is_dlq_of(source_queue, target_arn):
     rp = source_queue['attributes'].get('RedrivePolicy')
@@ -70,7 +76,14 @@ def lambda_handler(event, context):
             ]
             queues = []
             for q in page_items:
-                attr = sqs.get_queue_attributes(QueueUrl=q['url'], AttributeNames=attrs_to_get).get('Attributes', {})
+                try:
+                    attr = sqs.get_queue_attributes(QueueUrl=q['url'], AttributeNames=attrs_to_get).get('Attributes', {})
+                except Exception as e:
+                    logger.warning(
+                        "Failed to get queue attributes for %s (attrs=%s): %s",
+                        q['url'], attrs_to_get, e, exc_info=True,
+                    )
+                    attr = {}
                 queues.append({'name': q['name'], 'url': q['url'], 'attributes': attr})
 
             # Enrich DLQ relationships within the page
@@ -136,6 +149,8 @@ def lambda_handler(event, context):
             if body.get('messageGroupId'):
                 kwargs['MessageGroupId'] = body['messageGroupId']
             if body.get('messageDeduplicationId'):
+                if not queue_name.endswith('.fifo'):
+                    return cors_response(400, {'error': 'messageDeduplicationId is only supported for FIFO queues'})
                 kwargs['MessageDeduplicationId'] = body['messageDeduplicationId']
             if body.get('delaySeconds') is not None:
                 kwargs['DelaySeconds'] = int(body['delaySeconds'])
@@ -161,15 +176,99 @@ def lambda_handler(event, context):
             sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=body['receiptHandle'])
             return cors_response(200, {'deleted': True})
 
+        # PUT /queues/{queueName}/messages — atomic edit (delete old + send new)
+        if method == 'PUT' and sub_path == '/messages':
+            message_body = body.get('messageBody')
+            message_id = body.get('messageId')
+            if not message_body:
+                return cors_response(400, {'error': 'messageBody is required'})
+            if not message_id:
+                return cors_response(400, {'error': 'messageId is required'})
+
+            # Find the original message by MessageId using a fresh receive, then delete it.
+            # Long polling (WaitTimeSeconds > 0) queries all SQS servers, avoiding
+            # the random-subset sampling of short polling that can miss messages on
+            # busy queues.
+            poll_wait = int(os.environ.get('SQS_MOVE_POLL_WAIT_SECONDS', '5'))
+            max_attempts = int(os.environ.get('SQS_MOVE_MAX_ATTEMPTS', '5'))
+            found = False
+            for _ in range(max_attempts):
+                batch = sqs.receive_message(
+                    QueueUrl=queue_url, MaxNumberOfMessages=10,
+                    WaitTimeSeconds=poll_wait, AttributeNames=['All'],
+                    MessageAttributeNames=['All'],
+                )
+                msgs = batch.get('Messages', [])
+                if not msgs:
+                    continue
+                for msg in msgs:
+                    if msg['MessageId'] == message_id:
+                        original_attributes = msg.get('Attributes', {})
+                        original_message_attributes = msg.get('MessageAttributes', {})
+                        # Validate FIFO requirements before deleting
+                        if queue_name.endswith('.fifo'):
+                            effective_group_id = body.get('messageGroupId') or original_attributes.get('MessageGroupId')
+                            if not effective_group_id:
+                                # Reset visibility for ALL messages in the batch (including this one)
+                                for reset_msg in msgs:
+                                    sqs.change_message_visibility(QueueUrl=queue_url, ReceiptHandle=reset_msg['ReceiptHandle'], VisibilityTimeout=0)
+                                return cors_response(400, {'error': 'messageGroupId is required for FIFO queues and was not found in the request or the original message'})
+                        try:
+                            sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=msg['ReceiptHandle'])
+                            found = True
+                        except Exception as e:
+                            logger.exception("Edit: failed to delete message")
+                            return cors_response(400, {'error': f'Failed to delete original message: {str(e)}'})
+                    else:
+                        # Return non-matching messages to the queue
+                        sqs.change_message_visibility(QueueUrl=queue_url, ReceiptHandle=msg['ReceiptHandle'], VisibilityTimeout=0)
+                if found:
+                    break
+            if not found:
+                return cors_response(400, {'error': 'Could not find original message to delete — it may have already been consumed'})
+
+            # Send the new message
+            send_kwargs = {'QueueUrl': queue_url, 'MessageBody': message_body}
+            if original_message_attributes:
+                send_kwargs['MessageAttributes'] = original_message_attributes
+            if body.get('messageGroupId'):
+                send_kwargs['MessageGroupId'] = body['messageGroupId']
+            elif queue_name.endswith('.fifo'):
+                send_kwargs['MessageGroupId'] = original_attributes.get('MessageGroupId', 'edit')
+            if queue_name.endswith('.fifo'):
+                # Always generate a unique dedup ID for edits to avoid SQS 5-minute
+                # deduplication window silently dropping the edited message.
+                # Strip any previous -edit-* suffixes to prevent unbounded growth.
+                dedup = body.get('messageDeduplicationId', '')
+                dedup = re.sub(r'(-edit-[0-9a-f]+)+$', '', dedup)
+                send_kwargs['MessageDeduplicationId'] = f"{dedup}-edit-{uuid.uuid4().hex[:8]}" if dedup else uuid.uuid4().hex
+            # messageDeduplicationId is intentionally NOT sent for standard queues;
+            # SQS rejects it with InvalidParameterValue and the original is already deleted.
+            try:
+                result = sqs.send_message(**send_kwargs)
+            except Exception as e:
+                logger.exception("Edit partial failure: original deleted but new message send failed")
+                return cors_response(500, {'error': f'Original message deleted but re-send failed: {str(e)}'})
+
+            return cors_response(200, {'messageId': result['MessageId']})
+
         # POST /queues/{queueName}/redrive — move messages from DLQ back to source queue
         if method == 'POST' and sub_path == '/redrive':
             max_msgs = int(body.get('maxMessages', 10))
             # Find source queues that use this DLQ
-            dlq_arn = sqs.get_queue_attributes(QueueUrl=queue_url, AttributeNames=['QueueArn'])['Attributes']['QueueArn']
+            try:
+                dlq_arn = sqs.get_queue_attributes(QueueUrl=queue_url, AttributeNames=['QueueArn'])['Attributes']['QueueArn']
+            except Exception as e:
+                return cors_response(403, {'error': f'Cannot get ARN for queue: {str(e)}'})
+
             all_urls = sqs.list_queues().get('QueueUrls', [])
             source_url = None
             for url in all_urls:
-                attrs = sqs.get_queue_attributes(QueueUrl=url, AttributeNames=['RedrivePolicy']).get('Attributes', {})
+                try:
+                    attrs = sqs.get_queue_attributes(QueueUrl=url, AttributeNames=['RedrivePolicy']).get('Attributes', {})
+                except Exception as e:
+                    logger.debug("Failed to get queue attributes for %s: %s", url, e)
+                    continue
                 rp = attrs.get('RedrivePolicy')
                 if rp:
                     try:
@@ -182,17 +281,30 @@ def lambda_handler(event, context):
                 return cors_response(400, {'error': 'No source queue found for this DLQ'})
 
             # Check if source is FIFO
-            source_attrs = sqs.get_queue_attributes(QueueUrl=source_url, AttributeNames=['FifoQueue']).get('Attributes', {})
-            is_fifo = source_attrs.get('FifoQueue') == 'true'
+            try:
+                source_attrs = sqs.get_queue_attributes(QueueUrl=source_url, AttributeNames=['FifoQueue']).get('Attributes', {})
+                is_fifo = source_attrs.get('FifoQueue') == 'true'
+            except Exception:
+                is_fifo = source_url.endswith('.fifo')
 
             moved = 0
+            move_max_attempts = int(os.environ.get('SQS_MOVE_MAX_ATTEMPTS', '5'))
+            poll_wait = int(os.environ.get('SQS_MOVE_POLL_WAIT_SECONDS', '5'))
+            empty_receives = 0
             while moved < max_msgs:
-                batch = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=min(10, max_msgs - moved), WaitTimeSeconds=0, AttributeNames=['All'])
+                batch = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=min(10, max_msgs - moved), WaitTimeSeconds=poll_wait, AttributeNames=['All'], MessageAttributeNames=['All'])
                 msgs = batch.get('Messages', [])
                 if not msgs:
-                    break
+                    empty_receives += 1
+                    if empty_receives >= move_max_attempts:
+                        break
+                    continue
+                empty_receives = 0
                 for msg in msgs:
                     send_kwargs = {'QueueUrl': source_url, 'MessageBody': msg['Body']}
+                    msg_msg_attrs = msg.get('MessageAttributes', {})
+                    if msg_msg_attrs:
+                        send_kwargs['MessageAttributes'] = msg_msg_attrs
                     if is_fifo:
                         send_kwargs['MessageGroupId'] = msg.get('Attributes', {}).get('MessageGroupId', 'redrive')
                         send_kwargs['MessageDeduplicationId'] = msg['MessageId'] + '-redrive'
@@ -253,19 +365,114 @@ def lambda_handler(event, context):
         if method == 'POST' and sub_path == '/move':
             target_name = body.get('targetQueue')
             max_msgs = int(body.get('maxMessages', 100))
+
             if not target_name:
                 return cors_response(400, {'error': 'targetQueue is required'})
+            
             target_url = sqs.get_queue_url(QueueName=target_name)['QueueUrl']
-            target_attrs = sqs.get_queue_attributes(QueueUrl=target_url, AttributeNames=['FifoQueue']).get('Attributes', {})
-            is_target_fifo = target_attrs.get('FifoQueue') == 'true'
+            try:
+                target_attrs = sqs.get_queue_attributes(QueueUrl=target_url, AttributeNames=['FifoQueue']).get('Attributes', {})
+                is_target_fifo = target_attrs.get('FifoQueue') == 'true'
+            except Exception:
+                is_target_fifo = target_name.endswith('.fifo')
+
+            message_id = body.get('messageId')
+            if message_id:
+                # Move a single message using a fresh receive to avoid stale receipt handles.
+                # The peek endpoint (GET /messages) resets visibility immediately, so the
+                # receipt handle returned to the frontend is unreliable by the time the
+                # move request arrives.  Re-receive by MessageId to get a fresh handle,
+                # matching the pattern used by the edit (PUT /messages) endpoint.
+                poll_wait = int(os.environ.get('SQS_MOVE_POLL_WAIT_SECONDS', '5'))
+                max_attempts = int(os.environ.get('SQS_MOVE_MAX_ATTEMPTS', '5'))
+                found_msg = None
+                empty_receives = 0
+                for _ in range(max_attempts):
+                    batch = sqs.receive_message(
+                        QueueUrl=queue_url, MaxNumberOfMessages=10,
+                        WaitTimeSeconds=poll_wait, AttributeNames=['All'],
+                        MessageAttributeNames=['All'],
+                    )
+                    msgs = batch.get('Messages', [])
+                    if not msgs:
+                        empty_receives += 1
+                        if empty_receives >= max_attempts:
+                            break
+                        continue
+                    empty_receives = 0
+                    for msg in msgs:
+                        if msg['MessageId'] == message_id:
+                            found_msg = msg
+                        else:
+                            sqs.change_message_visibility(
+                                QueueUrl=queue_url,
+                                ReceiptHandle=msg['ReceiptHandle'],
+                                VisibilityTimeout=0,
+                            )
+                    if found_msg:
+                        break
+
+                if not found_msg:
+                    return cors_response(409, {
+                        'error': 'Could not re-receive the message — it may have been consumed or is temporarily invisible',
+                    })
+
+                msg_body = found_msg['Body']
+                msg_attributes = found_msg.get('Attributes', {})
+                fresh_receipt = found_msg['ReceiptHandle']
+
+                send_kwargs = {'QueueUrl': target_url, 'MessageBody': msg_body}
+                msg_message_attributes = found_msg.get('MessageAttributes', {})
+                if msg_message_attributes:
+                    send_kwargs['MessageAttributes'] = msg_message_attributes
+                if is_target_fifo:
+                    send_kwargs['MessageGroupId'] = msg_attributes.get('MessageGroupId', 'move')
+                    send_kwargs['MessageDeduplicationId'] = found_msg['MessageId'] + '-move'
+
+                try:
+                    sqs.send_message(**send_kwargs)
+                except Exception as e:
+                    logger.exception("Move: failed to send message to target queue: %s", e)
+                    try:
+                        sqs.change_message_visibility(
+                            QueueUrl=queue_url,
+                            ReceiptHandle=fresh_receipt,
+                            VisibilityTimeout=0,
+                        )
+                    except Exception as vis_err:
+                        logger.exception("Move: failed to restore source message visibility: %s", vis_err)
+                    return cors_response(500, {
+                        'error': f'Failed to send message to target queue: {str(e)}',
+                    })
+
+                try:
+                    sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=fresh_receipt)
+                except Exception as e:
+                    logger.exception("Move: sent to target but failed to delete from source: %s", str(e))
+                    return cors_response(500, {
+                        'error': f'Message sent to target queue but deletion from source failed: {str(e)}',
+                    })
+
+                return cors_response(200, {'moved': 1, 'targetQueue': target_name})
+
             moved = 0
+            move_max_attempts = int(os.environ.get('SQS_MOVE_MAX_ATTEMPTS', '5'))
+            poll_wait = int(os.environ.get('SQS_MOVE_POLL_WAIT_SECONDS', '5'))
+            empty_receives = 0
             while moved < max_msgs:
-                batch = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=min(10, max_msgs - moved), WaitTimeSeconds=0, AttributeNames=['All'])
+                batch = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=min(10, max_msgs - moved), WaitTimeSeconds=poll_wait, AttributeNames=['All'], MessageAttributeNames=['All'])
                 msgs = batch.get('Messages', [])
                 if not msgs:
-                    break
+                    empty_receives += 1
+                    if empty_receives >= move_max_attempts:
+                        break
+                    continue
+                empty_receives = 0
                 for msg in msgs:
                     send_kwargs = {'QueueUrl': target_url, 'MessageBody': msg['Body']}
+                    msg_msg_attrs = msg.get('MessageAttributes', {})
+                    if msg_msg_attrs:
+                        send_kwargs['MessageAttributes'] = msg_msg_attrs
                     if is_target_fifo:
                         send_kwargs['MessageGroupId'] = msg.get('Attributes', {}).get('MessageGroupId', 'move')
                         send_kwargs['MessageDeduplicationId'] = msg['MessageId'] + '-move'
