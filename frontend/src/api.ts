@@ -1,4 +1,4 @@
-import { getIdToken, authEnabled } from './auth'
+import {authEnabled, getIdToken} from './auth'
 
 const BASE = import.meta.env.VITE_API_URL || '/api'
 
@@ -33,6 +33,8 @@ export const api = {
     request(`/queues/${name}/messages?maxMessages=${maxMessages}&waitTime=${waitTime}`),
   deleteMessage: (name: string, receiptHandle: string) =>
     request(`/queues/${name}/messages`, { method: 'DELETE', body: JSON.stringify({ receiptHandle }) }),
+  editMessage: (name: string, messageBody: string, messageId: string, opts?: { messageGroupId?: string; messageDeduplicationId?: string }) =>
+    request(`/queues/${name}/messages`, { method: 'PUT', body: JSON.stringify({ messageBody, messageId, ...opts }) }),
   redriveMessages: (name: string, maxMessages = 10) =>
     request(`/queues/${name}/redrive`, { method: 'POST', body: JSON.stringify({ maxMessages }) }),
   sendBatch: (name: string, messages: any[]) =>
@@ -41,6 +43,20 @@ export const api = {
     request(`/queues/${name}/export`, { method: 'POST', body: JSON.stringify({ maxMessages }) }),
   importMessages: (name: string, messages: any[]) =>
     request(`/queues/${name}/import`, { method: 'POST', body: JSON.stringify({ messages }) }),
-  moveMessages: (name: string, targetQueue: string, maxMessages = 100) =>
-    request(`/queues/${name}/move`, { method: 'POST', body: JSON.stringify({ targetQueue, maxMessages }) }),
+  moveMessages: (name: string, targetQueue: string, maxMessages = 100, messageId?: string) =>
+    request(`/queues/${name}/move`, { method: 'POST', body: JSON.stringify({ targetQueue, maxMessages, messageId }) }),
+  getQueueByName: async (name: string) => {
+    const pageSize = 50
+    let page = 1
+    const maxPages = 20
+    while (page <= maxPages) {
+      const data = await request(`/queues?page=${page}&pageSize=${pageSize}&search=${encodeURIComponent(name)}`)
+      const queues = data?.queues || []
+      const match = queues.find((q: any) => q.name === name)
+      if (match) return match
+      if (queues.length < pageSize) return null
+      page++
+    }
+    return null
+  },
 }
